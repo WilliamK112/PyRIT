@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pyrit.backend.services.scenario_progress_read_model import (
     ScenarioProgressReadModel,
     ScenarioProgressSnapshot,
@@ -138,6 +140,92 @@ def test_get_snapshot_invalidates_cache_when_plan_changes() -> None:
     assert [call.kwargs["cursor"] for call in memory.get_scenario_attack_result_deltas.call_args_list] == [
         None,
         None,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("active_group_ids", "terminal", "plan_complete", "expected_status", "expected_planned"),
+    [
+        pytest.param(("group",), False, True, "RUNNING", 2, id="active-group-change"),
+        pytest.param((), True, True, "INCOMPLETE", 2, id="terminal-state-change"),
+        pytest.param((), False, False, "PENDING", None, id="plan-completeness-change"),
+    ],
+)
+def test_get_snapshot_updates_summary_without_new_rows(
+    *,
+    active_group_ids: tuple[str, ...],
+    terminal: bool,
+    plan_complete: bool,
+    expected_status: str,
+    expected_planned: int | None,
+) -> None:
+    memory = MagicMock(spec=MemoryInterface)
+    deltas = [_make_delta(run_id="run-state", index=index) for index in range(2)]
+    plan = ScenarioRunPlan(
+        atomic_groups=[
+            ScenarioRunPlanAtomicGroup(
+                id="group",
+                atomic_attack_name="attack",
+                display_group="Attack",
+                technique_eval_hash="",
+                seed_group_ids=["seed-0", "seed-1"],
+            )
+        ],
+        seed_groups=[
+            ScenarioRunPlanSeedGroup(
+                id=f"seed-{index}",
+                objective_sha256=delta.objective_sha256 or "",
+                objective=delta.objective,
+            )
+            for index, delta in enumerate(deltas)
+        ],
+    )
+    memory.get_scenario_attack_result_deltas.side_effect = [([deltas[0]], False), ([], False), ([], False)]
+    read_model = ScenarioProgressReadModel(memory=memory)
+
+    with patch.object(read_model, "_map_progress_delta", wraps=read_model._map_progress_delta) as map_delta:
+        first = read_model.get_snapshot(
+            scenario_result_id="run-state",
+            plan=plan,
+            plan_complete=True,
+            active_group_ids=(),
+            terminal=False,
+            objective_scorer_identifier=None,
+        )
+        second = read_model.get_snapshot(
+            scenario_result_id="run-state",
+            plan=plan,
+            plan_complete=plan_complete,
+            active_group_ids=active_group_ids,
+            terminal=terminal,
+            objective_scorer_identifier=None,
+        )
+        restored = read_model.get_snapshot(
+            scenario_result_id="run-state",
+            plan=plan,
+            plan_complete=True,
+            active_group_ids=(),
+            terminal=False,
+            objective_scorer_identifier=None,
+        )
+
+    assert first.summary.atomic_groups[0].status == "PENDING"
+    assert first.summary.overall.planned == 2
+    assert second.summary.atomic_groups[0].status == expected_status
+    assert second.summary.overall.planned == expected_planned
+    assert second.summary.overall.completed == 1
+    assert second.summary.overall.succeeded == 1
+    assert restored.summary == first.summary
+    assert first.results == second.results == restored.results
+    map_delta.assert_called_once()
+    cursor = AttackResultKeysetCursor(
+        timestamp=deltas[0].timestamp,
+        attack_result_id=deltas[0].attack_result_id,
+    )
+    assert [call.kwargs["cursor"] for call in memory.get_scenario_attack_result_deltas.call_args_list] == [
+        None,
+        cursor,
+        cursor,
     ]
 
 

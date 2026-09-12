@@ -27,7 +27,7 @@ from pyrit.backend.services.scenario_run_service import (
 )
 from pyrit.common.utils import to_sha256
 from pyrit.converter import Converter
-from pyrit.memory import ScenarioHistoryAggregate, ScenarioHistoryRunRecord
+from pyrit.memory import AttackResultKeysetCursor, ScenarioHistoryAggregate, ScenarioHistoryRunRecord
 from pyrit.models import (
     SCENARIO_RUN_PLAN_METADATA_KEY,
     AtomicAttackIdentifier,
@@ -2412,6 +2412,143 @@ def test_get_progress_cache_refreshes_identifier_enriched_after_insert(mock_memo
         appended.attack_result_id,
     ]
     assert mock_memory.get_scenario_attack_result_deltas.call_args_list[1].kwargs["cursor"] is None
+
+
+def test_get_progress_refreshes_enriched_rows_across_storage_pages(mock_memory: MagicMock) -> None:
+    attack_identifier = ComponentIdentifier(class_name="PromptSendingAttack", class_module="tests")
+    unenriched_identifier = AtomicAttackIdentifier.build(attack_identifier=attack_identifier)
+    deltas = [
+        ScenarioAttackResultDelta(
+            attack_result_id=str(uuid.UUID(int=index + 1)),
+            conversation_id=f"conversation-{index}",
+            objective=f"objective-{index}",
+            objective_sha256=f"sha-{index}",
+            outcome=AttackOutcome.SUCCESS,
+            execution_time_ms=10,
+            timestamp=datetime(2025, 1, 1, tzinfo=UTC),
+            atomic_attack_identifier=unenriched_identifier if index == 0 else None,
+            attribution_data={
+                "parent_collection": "attack",
+                "parent_eval_hash": "eval",
+                "seed_group_id": f"seed-{index}",
+            },
+        )
+        for index in range(501)
+    ]
+    plan = ScenarioRunPlan(
+        atomic_groups=[
+            ScenarioRunPlanAtomicGroup(
+                id="group",
+                atomic_attack_name="attack",
+                display_group="Attack",
+                technique_eval_hash="eval",
+                seed_group_ids=[f"seed-{index}" for index in range(501)],
+            )
+        ],
+        seed_groups=[
+            ScenarioRunPlanSeedGroup(
+                id=f"seed-{index}",
+                objective_sha256=delta.objective_sha256 or "",
+                objective=delta.objective,
+            )
+            for index, delta in enumerate(deltas)
+        ],
+    )
+    header = make_scenario_result(
+        attack_results={},
+        scenario_run_state=ScenarioRunState.IN_PROGRESS,
+        metadata={SCENARIO_RUN_PLAN_METADATA_KEY: plan.model_dump(mode="json")},
+    )
+    run_id = str(header.id)
+    stored_deltas = deltas[:500]
+
+    def get_deltas(
+        *,
+        scenario_result_id: str,
+        cursor: AttackResultKeysetCursor | None,
+        limit: int,
+    ) -> tuple[list[ScenarioAttackResultDelta], bool]:
+        assert scenario_result_id == run_id
+        assert limit == 500
+        available = [
+            delta
+            for delta in stored_deltas
+            if cursor is None
+            or (delta.timestamp, uuid.UUID(delta.attack_result_id))
+            > (cursor.timestamp, uuid.UUID(cursor.attack_result_id))
+        ]
+        return [delta.model_copy(deep=True) for delta in available[:limit]], len(available) > limit
+
+    mock_memory.get_scenario_result_header.return_value = header
+    mock_memory.get_scenario_attack_result_deltas.side_effect = get_deltas
+    service = ScenarioRunService()
+
+    first = service.get_run_progress(scenario_result_id=run_id, since=None, limit=100)
+
+    assert first is not None
+    assert first.plan == plan
+    assert first.plan_complete is True
+    assert len(first.results) == 100
+    assert first.has_more is True
+    assert first.summary.overall.completed == 500
+    assert first.summary.atomic_groups[0].technique_details is None
+    first_payload = first.model_dump(mode="json")
+
+    stored_deltas[0] = stored_deltas[0].model_copy(
+        update={
+            "atomic_attack_identifier": AtomicAttackIdentifier.build(
+                technique_identifier=ComponentIdentifier(
+                    class_name="AttackTechnique",
+                    class_module="tests",
+                    children={"attack": attack_identifier},
+                ),
+                seed_group=AttackSeedGroup(seeds=[SeedObjective(value=deltas[0].objective)]),
+            )
+        }
+    )
+    stored_deltas.append(deltas[500])
+
+    result_ids = [result.attack_result_id for result in first.results]
+    cursor = first.next_cursor
+    for offset in range(100, 501, 100):
+        page = service.get_run_progress(scenario_result_id=run_id, since=cursor, limit=100)
+
+        assert page is not None
+        assert page.plan is None
+        assert page.plan_complete is True
+        assert [result.attack_result_id for result in page.results] == [
+            delta.attack_result_id for delta in stored_deltas[offset : offset + 100]
+        ]
+        assert page.has_more is (offset + 100 < 501)
+        assert page.summary.overall.completed == 501
+        assert page.summary.overall.succeeded == 501
+        assert page.summary.overall.retries == 0
+        assert page.summary.overall.errors == 0
+        assert page.summary.atomic_groups[0].technique_details is not None
+        result_ids.extend(result.attack_result_id for result in page.results)
+        cursor = page.next_cursor
+
+    assert result_ids == [delta.attack_result_id for delta in stored_deltas]
+    assert len(set(result_ids)) == 501
+    assert first.model_dump(mode="json") == first_payload
+
+    empty = service.get_run_progress(scenario_result_id=run_id, since=cursor, limit=100)
+    assert empty is not None
+    assert empty.results == []
+    assert empty.has_more is False
+    assert empty.next_cursor == cursor
+
+    storage_cursors = [call.kwargs["cursor"] for call in mock_memory.get_scenario_attack_result_deltas.call_args_list]
+    assert storage_cursors[:3] == [
+        None,
+        None,
+        AttackResultKeysetCursor(timestamp=deltas[499].timestamp, attack_result_id=deltas[499].attack_result_id),
+    ]
+    assert all(
+        cursor
+        == AttackResultKeysetCursor(timestamp=deltas[500].timestamp, attack_result_id=deltas[500].attack_result_id)
+        for cursor in storage_cursors[3:]
+    )
 
 
 def test_get_progress_treats_duplicate_stored_plan_groups_as_incomplete(mock_memory) -> None:
