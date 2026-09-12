@@ -18,11 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pyrit.backend.services.scenario_configuration_resolver as _resolver_mod
+import pyrit.backend.services.scenario_progress_read_model as _progress_mod
 import pyrit.backend.services.scenario_run_service as _svc_mod
+from pyrit.backend.services.scenario_progress_read_model import ScenarioPlanLookup, ScenarioProgressReadModel
 from pyrit.backend.services.scenario_run_service import (
     _DEFAULT_MAX_CONCURRENT_RUNS,
     ScenarioRunService,
 )
+from pyrit.common.utils import to_sha256
 from pyrit.converter import Converter
 from pyrit.memory import ScenarioHistoryAggregate, ScenarioHistoryRunRecord
 from pyrit.models import (
@@ -1209,7 +1212,7 @@ class TestScenarioRunServiceGetRun:
                     seed_groups=[
                         ScenarioRunPlanSeedGroup(
                             id="seed-1",
-                            objective_sha256=_svc_mod.to_sha256("objective"),
+                            objective_sha256=to_sha256("objective"),
                             objective="objective",
                         )
                     ],
@@ -2208,7 +2211,7 @@ def test_planned_progress_maps_legacy_objective_hash_to_logical_seed_id(mock_mem
         seed_groups=[
             ScenarioRunPlanSeedGroup(
                 id=seed_group_id,
-                objective_sha256=_svc_mod.to_sha256(objective),
+                objective_sha256=to_sha256(objective),
                 objective=objective,
             )
         ],
@@ -2336,10 +2339,13 @@ def test_get_progress_cache_refreshes_identifier_enriched_after_insert(mock_memo
                 atomic_attack_name="attack",
                 display_group="Attack",
                 technique_eval_hash="eval",
-                seed_group_ids=["seed"],
+                seed_group_ids=["seed", "seed-2"],
             )
         ],
-        seed_groups=[ScenarioRunPlanSeedGroup(id="seed", objective_sha256="sha", objective="objective")],
+        seed_groups=[
+            ScenarioRunPlanSeedGroup(id="seed", objective_sha256="sha", objective="objective"),
+            ScenarioRunPlanSeedGroup(id="seed-2", objective_sha256="sha-2", objective="objective-2"),
+        ],
     )
     header = make_scenario_result(
         attack_results={},
@@ -2372,10 +2378,25 @@ def test_get_progress_cache_refreshes_identifier_enriched_after_insert(mock_memo
             )
         }
     )
+    appended = pre_enrichment.model_copy(
+        update={
+            "attack_result_id": str(uuid.uuid4()),
+            "conversation_id": "conversation-2",
+            "objective": "objective-2",
+            "objective_sha256": "sha-2",
+            "timestamp": datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+            "atomic_attack_identifier": None,
+            "attribution_data": {
+                "parent_collection": "attack",
+                "parent_eval_hash": "eval",
+                "seed_group_id": "seed-2",
+            },
+        }
+    )
     mock_memory.get_scenario_result_header.return_value = header
     mock_memory.get_scenario_attack_result_deltas.side_effect = [
         ([pre_enrichment], False),
-        ([post_enrichment], False),
+        ([post_enrichment, appended], False),
     ]
     service = ScenarioRunService()
 
@@ -2386,6 +2407,10 @@ def test_get_progress_cache_refreshes_identifier_enriched_after_insert(mock_memo
     assert second is not None
     assert first.summary.atomic_groups[0].technique_details is None
     assert second.summary.atomic_groups[0].technique_details is not None
+    assert [result.attack_result_id for result in second.results] == [
+        post_enrichment.attack_result_id,
+        appended.attack_result_id,
+    ]
     assert mock_memory.get_scenario_attack_result_deltas.call_args_list[1].kwargs["cursor"] is None
 
 
@@ -2444,9 +2469,9 @@ def test_progress_prefers_persisted_logical_seed_group_attribution() -> None:
         },
     )
 
-    mapped = ScenarioRunService._map_progress_delta(
+    mapped = ScenarioProgressReadModel._map_progress_delta(
         delta=delta,
-        plan_lookup=_svc_mod._ScenarioPlanLookup.from_plan(plan=None),
+        plan_lookup=ScenarioPlanLookup.from_plan(plan=None),
     )
 
     assert mapped.seed_group_id == "canonical-seed-id"
@@ -2515,11 +2540,11 @@ def test_progress_builds_attack_technique_details_once_per_atomic_group() -> Non
         ),
     )
 
-    mapped = ScenarioRunService._map_progress_delta(
+    mapped = ScenarioProgressReadModel._map_progress_delta(
         delta=delta,
-        plan_lookup=_svc_mod._ScenarioPlanLookup.from_plan(plan=None),
+        plan_lookup=ScenarioPlanLookup.from_plan(plan=None),
     )
-    details_by_group = ScenarioRunService._build_technique_details_by_group(
+    details_by_group = ScenarioProgressReadModel._build_technique_details_by_group(
         deltas=[delta],
         results=[mapped],
     )
@@ -2568,7 +2593,7 @@ def test_technique_details_normalize_every_declared_target_slot() -> None:
         children={"attack": attack_identifier},
     )
 
-    details = ScenarioRunService._build_attack_technique_details(technique_identifier=technique_identifier)
+    details = ScenarioProgressReadModel._build_attack_technique_details(technique_identifier=technique_identifier)
 
     projected_attack = details.children["attack"][0]
     assert projected_attack.children["objective_target"][0].parameters == {"underlying_model_name": "gpt-4o"}
@@ -2578,7 +2603,7 @@ def test_technique_details_normalize_every_declared_target_slot() -> None:
 
 def test_technique_seeds_child_name_matches_the_identifier_field() -> None:
     """The one display constant left in the service must track the typed field."""
-    assert _svc_mod._TECHNIQUE_SEEDS_CHILD in AttackTechniqueIdentifier.model_fields
+    assert _progress_mod._TECHNIQUE_SEEDS_CHILD in AttackTechniqueIdentifier.model_fields
 
 
 def test_synthesize_legacy_plan_deduplicates_seed_ids_in_first_seen_order() -> None:
@@ -2605,7 +2630,7 @@ def test_synthesize_legacy_plan_deduplicates_seed_ids_in_first_seen_order() -> N
         for attack_name, eval_hash, seed_group_id, objective in delta_units
     ]
 
-    plan = ScenarioRunService._synthesize_legacy_plan(deltas=deltas)
+    plan = ScenarioProgressReadModel._synthesize_legacy_plan(deltas=deltas)
 
     assert [group.atomic_attack_name for group in plan.atomic_groups] == ["attack", "other attack"]
     assert plan.atomic_groups[0].seed_group_ids == ["seed-b", "seed-a"]
@@ -2763,8 +2788,8 @@ def test_progress_summary_uses_latest_attempt_for_backend_owned_counts() -> None
         recall=0.92,
         average_score_time_seconds=0.25,
     )
-    with patch.object(_svc_mod, "find_objective_metrics_by_eval_hash", return_value=metrics):
-        summary = ScenarioRunService._build_progress_summary(
+    with patch.object(_progress_mod, "find_objective_metrics_by_eval_hash", return_value=metrics):
+        summary = ScenarioProgressReadModel._build_progress_summary(
             plan=plan,
             plan_complete=True,
             results=results,
