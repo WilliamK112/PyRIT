@@ -6,18 +6,22 @@ import { AuthProvider } from './auth/AuthProvider'
 import { ThemeProvider } from './hooks/useTheme'
 import './styles/global.css'
 
-const router = createBrowserRouter([
-  {
-    path: '*',
-    element: <App />,
-  },
-])
+function AppRouter() {
+  const [router] = React.useState(() => createBrowserRouter([
+    {
+      path: '*',
+      element: <App />,
+    },
+  ]))
+
+  return <RouterProvider router={router} />
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ThemeProvider>
       <AuthProvider>
-        <RouterProvider router={router} />
+        <AppRouter />
       </AuthProvider>
     </ThemeProvider>
   </React.StrictMode>,
