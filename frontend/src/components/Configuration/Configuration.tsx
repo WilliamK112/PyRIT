@@ -152,7 +152,6 @@ export default function Configuration() {
     const discardAction = pendingDiscardAction
     setPendingDiscardAction(null)
     setContent(savedContent)
-    setEnvironmentHasUnsavedChanges(false)
     if (blocker.state === 'blocked') {
       blocker.proceed()
     } else {
