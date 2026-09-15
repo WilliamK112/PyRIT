@@ -1,16 +1,13 @@
 import type { ReactElement } from 'react'
 
 import { FluentProvider, useFocusFinders, webLightTheme } from '@fluentui/react-components'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router'
 
 import { configurationApi, initializersApi } from '@/services/api'
-import { mockJsdomLayout } from '@/test-utils/mockJsdomLayout'
 
 import Configuration from './Configuration'
-
-mockJsdomLayout()
 
 jest.mock('@/services/api', () => ({
   configurationApi: {
@@ -285,20 +282,10 @@ describe('Configuration', () => {
       { selector: 'label' },
     )).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Add initializer' }))
-    const dialog = await screen.findByRole(
-      'dialog',
-      { name: 'Add custom initializer' },
-      { timeout: 15_000 },
-    )
-    const nameInput = await within(dialog).findByRole(
-      'textbox',
-      { name: /Initializer name/ },
-      { timeout: 15_000 },
-    )
+    const dialog = await screen.findByRole('dialog', { name: 'Add custom initializer' })
+    const nameInput = within(dialog).getByRole('textbox', { name: /Initializer name/ })
     await user.type(nameInput, 'new_custom')
-    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Python source' }), {
-      target: { value: 'class NewCustom: pass' },
-    })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Python source' }), 'class NewCustom: pass')
     await user.click(within(dialog).getByRole('button', { name: 'Add' }))
 
     await waitFor(() => {
@@ -307,6 +294,36 @@ describe('Configuration', () => {
         script_content: 'class NewCustom: pass',
       })
     })
+  })
+
+  it('should keep the add initializer dialog accessible after modal housekeeping', async () => {
+    jest.useFakeTimers()
+    try {
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime })
+      renderPage()
+
+      await user.click(screen.getByRole('tab', { name: 'Custom Initializers' }))
+      expect(await screen.findByText(
+        'C:/Users/test/.pyrit/custom_initializers/custom_target.py',
+        { selector: 'label' },
+      )).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Add initializer' }))
+
+      // Tabster defers its modal aria-hidden update by 250 ms.
+      await act(async () => {
+        jest.advanceTimersByTime(250)
+      })
+
+      const dialog = screen.getByRole('dialog', { name: 'Add custom initializer' })
+      expect(within(dialog).getByRole('textbox', { name: /Initializer name/ })).toHaveFocus()
+      expect(within(dialog).getByRole('button', { name: 'Add' })).toBeDisabled()
+      await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog', { name: 'Add custom initializer' })).not.toBeInTheDocument()
+    } finally {
+      cleanup()
+      jest.runOnlyPendingTimers()
+      jest.useRealTimers()
+    }
   })
 
   it('should show configured initializers without a runtime apply action', async () => {

@@ -6,11 +6,8 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router'
 
 import { configurationApi } from '@/services/api'
-import { mockJsdomLayout } from '@/test-utils/mockJsdomLayout'
 
 import Configuration from './Configuration'
-
-mockJsdomLayout()
 
 jest.mock('@/services/api', () => ({
   configurationApi: {

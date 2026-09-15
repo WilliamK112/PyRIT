@@ -4,11 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Button, FluentProvider, Tab, TabList, webLightTheme } from '@fluentui/react-components'
 
-import { mockJsdomLayout } from '@/test-utils/mockJsdomLayout'
-
 import ConfirmDialog from './ConfirmDialog'
-
-mockJsdomLayout()
 
 const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
