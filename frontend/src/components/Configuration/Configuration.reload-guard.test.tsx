@@ -6,8 +6,11 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router'
 
 import { configurationApi } from '@/services/api'
+import { mockJsdomLayout } from '@/test-utils/mockJsdomLayout'
 
 import Configuration from './Configuration'
+
+mockJsdomLayout()
 
 jest.mock('@/services/api', () => ({
   configurationApi: {
@@ -141,14 +144,14 @@ describe('Configuration failed environment reload guard', () => {
     mockedConfigurationApi.listEnvironmentFiles.mockRejectedValueOnce(new Error('Reload failed'))
 
     await user.click(screen.getByRole('button', { name: 'Reload' }))
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
 
     expect(await screen.findByText('Reload failed')).toBeInTheDocument()
     expect(screen.getByLabelText('Environment file contents')).toHaveValue('API_KEY=unsaved\n')
 
-    await user.click(screen.getByRole('button', { name: 'Go to scanner' }))
+    await user.click(await screen.findByRole('button', { name: 'Go to scanner' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     expect(screen.getByLabelText('Current URL')).toHaveTextContent(/^\/config\?tab=environment$/)
   })
 })

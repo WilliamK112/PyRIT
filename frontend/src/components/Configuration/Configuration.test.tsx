@@ -1,13 +1,16 @@
 import type { ReactElement } from 'react'
 
-import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { FluentProvider, useFocusFinders, webLightTheme } from '@fluentui/react-components'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router'
 
 import { configurationApi, initializersApi } from '@/services/api'
+import { mockJsdomLayout } from '@/test-utils/mockJsdomLayout'
 
 import Configuration from './Configuration'
+
+mockJsdomLayout()
 
 jest.mock('@/services/api', () => ({
   configurationApi: {
@@ -42,10 +45,9 @@ class RouterTestRequest {
   }
 }
 
-// Fluent UI dialogs can render slowly in JSDOM under full test load.
-jest.setTimeout(60_000)
-
 function RouterProbe(): ReactElement {
+  // Keep Fluent focus management mounted across routes, like the app shell.
+  useFocusFinders()
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -360,16 +362,16 @@ describe('Configuration', () => {
     await user.type(editor, 'operator: unsaved\n')
     await user.click(screen.getByRole('tab', { name: 'Environment & Secrets' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     expect(screen.getByLabelText('Current URL')).toHaveTextContent(/^\/config$/)
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Configuration YAML')).toHaveValue('operator: unsaved\n')
 
-    await user.click(screen.getByRole('tab', { name: 'Environment & Secrets' }))
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('tab', { name: 'Environment & Secrets' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
     expect(await screen.findByLabelText('Environment file contents')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'PyRIT Configuration' }))
+    await user.click(await screen.findByRole('tab', { name: 'PyRIT Configuration' }))
     expect(await screen.findByLabelText('Configuration YAML')).toHaveValue('operator: alice\n')
   })
 
@@ -382,12 +384,12 @@ describe('Configuration', () => {
     await user.type(editor, 'API_KEY=unsaved\n')
     await user.click(screen.getByRole('tab', { name: 'Initializers' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Environment file contents')).toHaveValue('API_KEY=unsaved\n')
 
-    await user.click(screen.getByRole('tab', { name: 'Initializers' }))
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('tab', { name: 'Initializers' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
     expect(await screen.findByTestId('configured-initializer-row-0')).toBeInTheDocument()
   })
 
@@ -399,13 +401,13 @@ describe('Configuration', () => {
     await user.type(editor, '# unsaved')
     await user.click(screen.getByRole('button', { name: 'Go to scanner' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Current URL')).toHaveTextContent(/^\/config$/)
 
-    await user.click(screen.getByRole('button', { name: 'Go back' }))
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('button', { name: 'Go back' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
     expect(await screen.findByRole('heading', { name: 'Other page' })).toBeInTheDocument()
     expect(screen.getByLabelText('Current URL')).toHaveTextContent(/^\/$/)
   })
@@ -430,13 +432,13 @@ describe('Configuration', () => {
     await user.type(editor, '# unsaved')
     await user.click(screen.getByRole('button', { name: 'Reload' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Configuration YAML')).toHaveValue('operator: alice\n# unsaved')
     expect(mockedConfigurationApi.getContent).toHaveBeenCalledTimes(1)
 
-    await user.click(screen.getByRole('button', { name: 'Reload' }))
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('button', { name: 'Reload' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(mockedConfigurationApi.getContent).toHaveBeenCalledTimes(2))
     expect(await screen.findByLabelText('Configuration YAML')).toHaveValue('operator: alice\n')
   })
@@ -449,13 +451,13 @@ describe('Configuration', () => {
     await user.type(editor, '# unsaved')
     await user.click(screen.getByRole('button', { name: 'Reload' }))
 
-    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Environment file contents')).toHaveValue('API_KEY=value\n# unsaved')
     expect(mockedConfigurationApi.listEnvironmentFiles).toHaveBeenCalledTimes(1)
 
-    await user.click(screen.getByRole('button', { name: 'Reload' }))
-    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await user.click(await screen.findByRole('button', { name: 'Reload' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(mockedConfigurationApi.listEnvironmentFiles).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getByLabelText('Environment file contents')).toHaveValue('API_KEY=value\n'))
   })
